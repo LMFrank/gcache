@@ -53,3 +53,18 @@ func TestGet(t *testing.T) {
 		t.Fatalf("the value of unknow should be empty, but %s got", view)
 	}
 }
+
+func TestGetGroup(t *testing.T) {
+	groupName := "scores"
+	NewGroup(groupName, 2<<10, GetterFunc(
+		func(key string) ([]byte, error) {
+			return nil, nil
+		}))
+	if group := GetGroup(groupName); group == nil || group.name != groupName {
+		t.Fatalf("group %s not exist", groupName)
+	}
+
+	if group := GetGroup(groupName + "111"); group != nil {
+		t.Fatalf("expect nil, but %s got", group.name)
+	}
+}
