@@ -16,7 +16,7 @@ type Map struct {
 	hashmap  map[int]string // 虚拟节点与真实节点的映射表，键为虚拟节点的哈希值，值为真实节点
 }
 
-func New(replicas int, fn hash) *Map {
+func New(replicas int, fn Hash) *Map {
 	m := &Map{
 		replicas: replicas,
 		hash:     fn,
@@ -38,7 +38,7 @@ func (m *Map) Add(keys ...string) {
 			m.hashmap[hash] = key
 		}
 	}
-	sort.Ints(m.keys) // 哈希值排序
+	sort.Ints(m.keys) // 哈希值排序，以便后续查找
 }
 
 // 通过key获得hash环上最近的节点
