@@ -2,16 +2,26 @@ package sgcache
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
+	"sgcache/consistenthash"
 	"strings"
+	"sync"
 )
 
-const defaultBasePath = "/_sgcache/"
+const (
+	defaultBasePath = "/_sgcache/"
+	defaultReplicas = 50
+)
 
 type HTTPPool struct {
-	self     string // 记录自己的地址
-	basePath string // 节点间通讯地址的前缀
+	self        string // 记录自己的地址
+	basePath    string // 节点间通讯地址的前缀
+	mu          sync.Mutex
+	peers       *consistenthash.Map    // 根据具体的key选择节点
+	httpGetters map[string]*httpGetter // 映射远程节点与对应的httpGetter
 }
 
 func NewHTTPPool(self string) *HTTPPool {
@@ -56,3 +66,61 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Write(view.ByteSlice())
 }
+
+// 实例化一致性hash算法，添加传入的节点
+// 为每个节点创建http客户端httpGetter
+func (p *HTTPPool) Set(peers ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.peers = consistenthash.New(defaultReplicas, nil)
+	p.peers.Add(peers...)
+	p.httpGetters = make(map[string]*httpGetter, len(peers))
+	for _, peer := range peers {
+		p.httpGetters[peer] = &httpGetter{baseURL: peer + p.basePath}
+	}
+}
+
+// 包装了Get方法，根据具体的key选择节点，返回http客户端
+func (p *HTTPPool) PickPeer(key string) (peer PeerGetter, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if peer := p.peers.Get(key); peer != "" && peer != p.self {
+		p.Log("Pick peer %s", peer)
+		return p.httpGetters[peer], true
+	}
+	return nil, false
+}
+
+var _ PeerPicker = (*HTTPPool)(nil)
+
+type httpGetter struct {
+	baseURL string
+}
+
+// 获取返回值，并转换为[]bytes类型
+func (h *httpGetter) Get(group string, key string) ([]byte, error) {
+	u := fmt.Sprintf(
+		"%v%v/%v",
+		h.baseURL,
+		url.QueryEscape(group),
+		url.QueryEscape(key),
+	)
+	res, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned: %v", res.Status)
+	}
+
+	bytes, err := ioutil.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %v", err)
+	}
+
+	return bytes, nil
+}
+
+var _ PeerGetter = (*httpGetter)(nil)
