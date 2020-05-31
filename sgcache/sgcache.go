@@ -3,6 +3,7 @@ package sgcache
 import (
 	"fmt"
 	"log"
+	"sgcache/singleflight"
 	"sync"
 )
 
@@ -12,6 +13,7 @@ type Group struct {
 	getter    Getter // 缓存未命中时获取源数据的回调
 	mainCache cache  // 并发缓存
 	peers     PeerPicker
+	loader    *singleflight.Group
 }
 
 type Getter interface {
@@ -39,6 +41,7 @@ func NewGroup(name string, cacheBytes int64, getter GetterFunc) *Group {
 		name:      name,
 		getter:    getter,
 		mainCache: cache{cacheBytes: cacheBytes},
+		loader:    &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -77,16 +80,25 @@ func (g *Group) RegisterPeers(peers PeerPicker) {
 // 使用PickPeer()方法选择节点，若非本机节点，则调用getFromPeer()从远程获取
 // 若是本机节点或失败，则回退到getLocally()
 func (g *Group) load(key string) (value ByteView, err error) {
-	if g.peers != nil {
-		if peer, ok := g.peers.PickPeer(key); ok {
-			if value, err := g.getFromPeer(peer, key); err == nil {
-				return value, nil
+	// 使用Do确保并发场景下针对相同的key，load过程只会调用一次
+	view, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peers != nil {
+			if peer, ok := g.peers.PickPeer(key); ok {
+				if value, err := g.getFromPeer(peer, key); err == nil {
+					return value, nil
+				}
+				log.Println("[SgCache] Failed to get from peer", err)
 			}
-			log.Println("[SgCache] Failed to get from peer", err)
 		}
+
+		return g.getLocally(key)
+	})
+
+	if err == nil {
+		return view.(ByteView), nil
 	}
 
-	return g.getLocally(key)
+	return
 }
 
 // 将源数据添加到缓存
